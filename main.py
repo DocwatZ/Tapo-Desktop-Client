@@ -4,10 +4,13 @@ import os
 import threading
 from dotenv import load_dotenv
 from settings_page import SettingsPage
-from api import get_all_devices, get_device_details, get_presets, move_to_preset, move_camera
+from api import get_all_devices, get_device_details, get_presets, move_to_preset, move_camera, get_headers
 from video_player import VideoPlayer
 from PIL import Image, ImageTk
 import sys
+import settings_service
+from notification_service import NotificationService
+from event_adapter import EventAdapter
 
 def resource_path(relative_path):
     """Get absolute path to resource, works for dev and PyInstaller."""
@@ -51,6 +54,17 @@ class MainApp:
         self.video_player = None
         self.current_presets = {}  # Store current camera presets
         self.right_sidebar = None  # Right sidebar for presets
+
+        # Notification + event-polling services
+        notif_settings = settings_service.load_settings()
+        self.notification_service = NotificationService(notif_settings)
+        self.notification_service.set_icon_path(resource_path("logo.ico"))
+        self.event_adapter = EventAdapter(
+            get_headers_fn=get_headers,
+            on_event=self._on_camera_event,
+            on_status_change=self._on_connection_status,
+        )
+        self.event_adapter.update_settings(notif_settings)
         
         # Create main frame
         self.main_frame = tk.Frame(self.root, bg=self.bg_dark)
@@ -69,6 +83,11 @@ class MainApp:
         
         # Load devices on startup
         self.load_devices()
+
+        # Show first-run hint if this is the user's first launch
+        notif_settings = settings_service.load_settings()
+        if notif_settings.get("first_run", True):
+            self.root.after(800, self._show_first_run_hint)
         
     def create_header(self):
         header_frame = tk.Frame(self.main_frame, bg=self.bg_header, height=70)
@@ -113,6 +132,24 @@ class MainApp:
             command=self.open_settings
         )
         settings_btn.pack(side=tk.RIGHT, padx=20, pady=15)
+
+        # Status indicator (right of header, left of settings)
+        self.status_dot = tk.Label(
+            header_frame,
+            text="⬤",
+            font=("Segoe UI", 14),
+            bg=self.bg_header,
+            fg="#555555",  # grey = not yet started
+        )
+        self.status_dot.pack(side=tk.RIGHT, padx=(0, 6), pady=15)
+        self.status_label = tk.Label(
+            header_frame,
+            text="",
+            font=("Segoe UI", 10),
+            bg=self.bg_header,
+            fg=self.text_secondary,
+        )
+        self.status_label.pack(side=tk.RIGHT, padx=(0, 4), pady=15)
 
         # Add hover effect (optional, but improves UX)
         def on_enter_settings(e):
@@ -772,6 +809,9 @@ class MainApp:
         if previously_selected_id and previously_selected_id in item_frames:
             device, item_frame = item_frames[previously_selected_id]
             self.select_camera(device, item_frame)
+
+        # Start event monitoring with the freshly loaded device list
+        self._start_event_monitoring()
     
     def create_camera_item(self, device, index):
         """Create a camera item in the sidebar"""
@@ -881,6 +921,67 @@ class MainApp:
         if self.selected_device and self.selected_camera_frame:
             # Re-select the camera to restore video stream
             self.select_camera(self.selected_device, self.selected_camera_frame)
+
+    # ------------------------------------------------------------------
+    # Notification / event callbacks
+    # ------------------------------------------------------------------
+
+    def _on_camera_event(self, device_id: str, camera_name: str, event_type: str):
+        """Called by EventAdapter on a background thread when a new event fires."""
+        self.notification_service.notify(camera_name, device_id, event_type)
+
+    def _on_connection_status(self, status: str):
+        """Called by EventAdapter on a background thread when connection status changes."""
+        self.root.after(0, lambda s=status: self._update_status_indicator(s))
+
+    def _update_status_indicator(self, status: str):
+        """Update the coloured dot + label in the header (main-thread only)."""
+        colour_map = {
+            "connected": self.success,
+            "reconnecting": "#ffaa00",
+            "disconnected": self.error,
+        }
+        label_map = {
+            "connected": "Monitoring",
+            "reconnecting": "Reconnecting…",
+            "disconnected": "Disconnected",
+        }
+        colour = colour_map.get(status, "#555555")
+        label = label_map.get(status, "")
+        try:
+            self.status_dot.config(fg=colour)
+            self.status_label.config(text=label)
+        except Exception:
+            pass
+
+    def _start_event_monitoring(self):
+        """Start the EventAdapter for all loaded devices."""
+        if self.devices_data:
+            notif_settings = settings_service.load_settings()
+            self.notification_service.update_settings(notif_settings)
+            self.event_adapter.update_settings(notif_settings)
+            self.event_adapter.start(self.devices_data, settings=notif_settings)
+
+    def _show_first_run_hint(self):
+        """Show a one-time welcome message for first-run users."""
+        from tkinter import messagebox
+        messagebox.showinfo(
+            "Welcome to Tapo Desktop Client 🎉",
+            "It looks like this is your first time running the app.\n\n"
+            "To get started:\n"
+            "  1. Click the ⚙ Settings button in the top-right corner.\n"
+            "  2. Enter your Authorization token and X-Term-Id.\n"
+            "     (Obtain these by sniffing one packet from the Tapo\n"
+            "      Android app — see README for instructions.)\n"
+            "  3. Choose which alerts you want under Alert Settings.\n"
+            "  4. Click Save.\n\n"
+            "You'll then see your cameras appear in the left panel, and "
+            "desktop pop-up alerts will fire automatically when motion or "
+            "a person is detected.",
+        )
+        notif_settings = settings_service.load_settings()
+        notif_settings["first_run"] = False
+        settings_service.save_settings(notif_settings)
 
 if __name__ == "__main__":
     root = tk.Tk()

@@ -6,3 +6,6 @@ main.spec
 mqtt_session.py
 rtsp_config.json
 testing.py
+__pycache__/
+*.pyc
+.pytest_cache/
