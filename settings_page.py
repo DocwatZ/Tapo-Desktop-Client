@@ -4,6 +4,8 @@ import os
 from dotenv import load_dotenv, set_key, find_dotenv
 from rtsp_config import load_rtsp_config, set_rtsp_config, get_rtsp_config, cleanup_rtsp_config, delete_rtsp_config
 import sys
+import settings_service
+from notification_service import NotificationService
 
 def resource_path(relative_path):
     """Get absolute path to resource, works for dev and PyInstaller."""
@@ -147,6 +149,9 @@ class SettingsPage:
         
         # API Credentials Section
         self.create_api_section(content_frame)
+
+        # Alert / Notifications Section
+        self.create_notifications_section(content_frame)
         
         # RTSP Configuration Section
         self.create_rtsp_section(content_frame)
@@ -231,7 +236,237 @@ class SettingsPage:
         )
         self.xterm_entry.insert(0, current_x_term)
         self.xterm_entry.pack(fill=tk.X, pady=(0, 0), ipady=12, ipadx=15)
-    
+
+    def create_notifications_section(self, parent):
+        """Create the Alert & Notifications settings section."""
+        notif_settings = settings_service.load_settings()
+
+        card = tk.Frame(parent, bg=self.bg_card, relief=tk.FLAT)
+        card.pack(fill=tk.X, pady=(0, 30))
+
+        # --- Section title ---
+        tk.Label(
+            card,
+            text="🔔 Alert & Notification Settings",
+            font=("Segoe UI", 18, "bold"),
+            bg=self.bg_card,
+            fg=self.text_primary,
+        ).pack(pady=(30, 5), padx=40, anchor="w")
+
+        tk.Label(
+            card,
+            text="Choose when you'd like to be alerted and how.",
+            font=("Segoe UI", 10),
+            bg=self.bg_card,
+            fg=self.text_secondary,
+        ).pack(padx=40, anchor="w", pady=(0, 20))
+
+        content = tk.Frame(card, bg=self.bg_card)
+        content.pack(fill=tk.X, padx=40, pady=(0, 30))
+
+        # --- Alert types ---
+        self._notif_motion_var = tk.BooleanVar(value=notif_settings.get("alert_motion", True))
+        self._notif_person_var = tk.BooleanVar(value=notif_settings.get("alert_person", True))
+        self._notif_vehicle_var = tk.BooleanVar(value=notif_settings.get("alert_vehicle", False))
+
+        tk.Label(
+            content,
+            text="Alert me when the camera detects:",
+            font=("Segoe UI", 11, "bold"),
+            bg=self.bg_card,
+            fg=self.text_primary,
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+
+        def _chk(parent, text, var, row, col):
+            cb = tk.Checkbutton(
+                parent,
+                text=text,
+                variable=var,
+                font=("Segoe UI", 11),
+                bg=self.bg_card,
+                fg=self.text_primary,
+                activebackground=self.bg_card,
+                activeforeground=self.text_primary,
+                selectcolor=self.bg_input,
+                relief=tk.FLAT,
+                cursor="hand2",
+            )
+            cb.grid(row=row, column=col, sticky="w", padx=(0, 20), pady=4)
+            return cb
+
+        _chk(content, "Any Movement", self._notif_motion_var, 1, 0)
+        _chk(content, "A Person", self._notif_person_var, 1, 1)
+        _chk(content, "A Vehicle  (AI cameras only)", self._notif_vehicle_var, 1, 2)
+
+        tk.Label(
+            content,
+            text="Note: Person & vehicle detection requires a camera model with AI detection\n"
+                 "(e.g. C120, C225, C325WB). Older models support movement only.",
+            font=("Segoe UI", 9),
+            bg=self.bg_card,
+            fg=self.text_secondary,
+            justify="left",
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 16))
+
+        # --- Sound toggle ---
+        self._notif_sound_var = tk.BooleanVar(value=notif_settings.get("alert_sound", True))
+        sound_row = tk.Frame(content, bg=self.bg_card)
+        sound_row.grid(row=3, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        tk.Checkbutton(
+            sound_row,
+            text="Play a sound with each alert",
+            variable=self._notif_sound_var,
+            font=("Segoe UI", 11),
+            bg=self.bg_card,
+            fg=self.text_primary,
+            activebackground=self.bg_card,
+            activeforeground=self.text_primary,
+            selectcolor=self.bg_input,
+            relief=tk.FLAT,
+            cursor="hand2",
+        ).pack(side=tk.LEFT)
+
+        # --- Debounce ---
+        debounce_row = tk.Frame(content, bg=self.bg_card)
+        debounce_row.grid(row=4, column=0, columnspan=3, sticky="w", pady=(4, 8))
+        tk.Label(
+            debounce_row,
+            text="Wait at least",
+            font=("Segoe UI", 11),
+            bg=self.bg_card,
+            fg=self.text_primary,
+        ).pack(side=tk.LEFT)
+
+        self._notif_debounce_var = tk.StringVar(
+            value=str(notif_settings.get("debounce_seconds", 30))
+        )
+        debounce_entry = tk.Entry(
+            debounce_row,
+            textvariable=self._notif_debounce_var,
+            font=("Segoe UI", 11),
+            bg=self.bg_input,
+            fg=self.text_primary,
+            insertbackground=self.text_primary,
+            relief=tk.FLAT,
+            width=5,
+            justify="center",
+        )
+        debounce_entry.pack(side=tk.LEFT, padx=8, ipady=4)
+        tk.Label(
+            debounce_row,
+            text="seconds between alerts for the same camera and event type.",
+            font=("Segoe UI", 11),
+            bg=self.bg_card,
+            fg=self.text_primary,
+        ).pack(side=tk.LEFT)
+
+        # --- Quiet hours ---
+        self._notif_quiet_var = tk.BooleanVar(
+            value=notif_settings.get("quiet_hours_enabled", False)
+        )
+        quiet_row = tk.Frame(content, bg=self.bg_card)
+        quiet_row.grid(row=5, column=0, columnspan=3, sticky="w", pady=(8, 4))
+        tk.Checkbutton(
+            quiet_row,
+            text="Don't disturb me between",
+            variable=self._notif_quiet_var,
+            font=("Segoe UI", 11),
+            bg=self.bg_card,
+            fg=self.text_primary,
+            activebackground=self.bg_card,
+            activeforeground=self.text_primary,
+            selectcolor=self.bg_input,
+            relief=tk.FLAT,
+            cursor="hand2",
+        ).pack(side=tk.LEFT)
+
+        self._notif_quiet_start_var = tk.StringVar(
+            value=notif_settings.get("quiet_hours_start", "22:00")
+        )
+        self._notif_quiet_end_var = tk.StringVar(
+            value=notif_settings.get("quiet_hours_end", "07:00")
+        )
+        tk.Entry(
+            quiet_row,
+            textvariable=self._notif_quiet_start_var,
+            font=("Segoe UI", 11),
+            bg=self.bg_input,
+            fg=self.text_primary,
+            insertbackground=self.text_primary,
+            relief=tk.FLAT,
+            width=6,
+            justify="center",
+        ).pack(side=tk.LEFT, padx=6, ipady=4)
+        tk.Label(quiet_row, text="and", font=("Segoe UI", 11),
+                 bg=self.bg_card, fg=self.text_primary).pack(side=tk.LEFT)
+        tk.Entry(
+            quiet_row,
+            textvariable=self._notif_quiet_end_var,
+            font=("Segoe UI", 11),
+            bg=self.bg_input,
+            fg=self.text_primary,
+            insertbackground=self.text_primary,
+            relief=tk.FLAT,
+            width=6,
+            justify="center",
+        ).pack(side=tk.LEFT, padx=6, ipady=4)
+        tk.Label(quiet_row, text="(HH:MM, 24-hour clock)",
+                 font=("Segoe UI", 9),
+                 bg=self.bg_card, fg=self.text_secondary).pack(side=tk.LEFT, padx=4)
+
+        # --- Test / Restore buttons ---
+        btn_row = tk.Frame(content, bg=self.bg_card)
+        btn_row.grid(row=6, column=0, columnspan=3, sticky="w", pady=(16, 0))
+
+        def _test_notification():
+            svc = NotificationService(settings_service.load_settings())
+            svc.test_notification("Test Camera")
+
+        def _restore_defaults():
+            import copy
+            defaults = copy.deepcopy(settings_service.DEFAULTS)
+            self._notif_motion_var.set(defaults["alert_motion"])
+            self._notif_person_var.set(defaults["alert_person"])
+            self._notif_vehicle_var.set(defaults["alert_vehicle"])
+            self._notif_sound_var.set(defaults["alert_sound"])
+            self._notif_debounce_var.set(str(defaults["debounce_seconds"]))
+            self._notif_quiet_var.set(defaults["quiet_hours_enabled"])
+            self._notif_quiet_start_var.set(defaults["quiet_hours_start"])
+            self._notif_quiet_end_var.set(defaults["quiet_hours_end"])
+            messagebox.showinfo("Restored", "Alert settings reset to defaults.\nClick Save to apply.")
+
+        test_btn = tk.Button(
+            btn_row,
+            text="🔔  Test Notification",
+            font=("Segoe UI", 11),
+            bg=self.accent,
+            fg=self.bg_dark,
+            activebackground=self.accent_hover,
+            activeforeground=self.bg_dark,
+            relief=tk.FLAT,
+            cursor="hand2",
+            padx=16,
+            pady=8,
+            command=_test_notification,
+        )
+        test_btn.pack(side=tk.LEFT, padx=(0, 12))
+
+        restore_btn = tk.Button(
+            btn_row,
+            text="↺  Restore Defaults",
+            font=("Segoe UI", 11),
+            bg=self.bg_input,
+            fg=self.text_primary,
+            activebackground="#3a3a3a",
+            activeforeground=self.text_primary,
+            relief=tk.FLAT,
+            cursor="hand2",
+            padx=16,
+            pady=8,
+            command=_restore_defaults,
+        )
+        restore_btn.pack(side=tk.LEFT)
+
     def create_rtsp_section(self, parent):
         """Create RTSP configuration section"""
         # RTSP section card
@@ -649,6 +884,52 @@ class SettingsPage:
             set_key(env_path, "Authorization", authorization)
             set_key(env_path, "X-Term-Id", x_term_id)
             load_dotenv(override=True)
+
+            # Save notification settings
+            try:
+                notif_settings = settings_service.load_settings()
+                notif_settings["alert_motion"] = bool(self._notif_motion_var.get())
+                notif_settings["alert_person"] = bool(self._notif_person_var.get())
+                notif_settings["alert_vehicle"] = bool(self._notif_vehicle_var.get())
+                notif_settings["alert_sound"] = bool(self._notif_sound_var.get())
+                try:
+                    debounce = max(0, int(self._notif_debounce_var.get()))
+                except (ValueError, AttributeError):
+                    debounce = 30
+                notif_settings["debounce_seconds"] = debounce
+                notif_settings["quiet_hours_enabled"] = bool(self._notif_quiet_var.get())
+                qh_start = str(self._notif_quiet_start_var.get()).strip()
+                qh_end = str(self._notif_quiet_end_var.get()).strip()
+                # Validate HH:MM format (24-hour) for quiet hours
+                import re as _re
+                _hhmm = _re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+                if not _hhmm.match(qh_start):
+                    messagebox.showwarning(
+                        "Invalid Time",
+                        f"Quiet hours start time '{qh_start}' is not valid.\n"
+                        "Please use HH:MM in 24-hour format (e.g. 22:00).\n"
+                        "Reverting to previous value."
+                    )
+                    qh_start = notif_settings.get("quiet_hours_start", "22:00")
+                if not _hhmm.match(qh_end):
+                    messagebox.showwarning(
+                        "Invalid Time",
+                        f"Quiet hours end time '{qh_end}' is not valid.\n"
+                        "Please use HH:MM in 24-hour format (e.g. 07:00).\n"
+                        "Reverting to previous value."
+                    )
+                    qh_end = notif_settings.get("quiet_hours_end", "07:00")
+                notif_settings["quiet_hours_start"] = qh_start
+                notif_settings["quiet_hours_end"] = qh_end
+                notif_settings["first_run"] = False
+                settings_service.save_settings(notif_settings)
+                # Push live update to EventAdapter + NotificationService if available
+                if hasattr(self.main_app, 'notification_service') and self.main_app.notification_service:
+                    self.main_app.notification_service.update_settings(notif_settings)
+                if hasattr(self.main_app, 'event_adapter') and self.main_app.event_adapter:
+                    self.main_app.event_adapter.update_settings(notif_settings)
+            except Exception:
+                pass  # notification settings save failure is non-fatal
             
             # Get list of valid device IDs from current devices_data
             valid_device_ids = []
